@@ -1,5 +1,128 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "windows")]
+mod webview2_embedded_loader {
+    use std::ffi::{c_void, CString};
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::OnceLock;
+
+    const WEBVIEW2_LOADER_DLL: &[u8] = include_bytes!("../assets/WebView2Loader.dll");
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryW(lp_lib_file_name: *const u16) -> *mut c_void;
+        fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const i8) -> *mut c_void;
+    }
+
+    fn get_loader_module() -> *mut c_void {
+        static MODULE: OnceLock<usize> = OnceLock::new();
+        *MODULE.get_or_init(|| {
+            let dll_path = std::env::temp_dir().join("oac_WebView2Loader_x64.dll");
+            let needs_write = match std::fs::metadata(&dll_path) {
+                Ok(m) => m.len() != WEBVIEW2_LOADER_DLL.len() as u64,
+                Err(_) => true,
+            };
+            if needs_write {
+                let _ = std::fs::write(&dll_path, WEBVIEW2_LOADER_DLL);
+            }
+            let wide: Vec<u16> = dll_path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            unsafe { LoadLibraryW(wide.as_ptr()) as usize }
+        }) as *mut c_void
+    }
+
+    unsafe fn get_proc(name: &str) -> *mut c_void {
+        let hmod = get_loader_module();
+        if hmod.is_null() {
+            return std::ptr::null_mut();
+        }
+        let cname = CString::new(name).unwrap();
+        GetProcAddress(hmod, cname.as_ptr())
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn CompareBrowserVersions(
+        version1: *const u16,
+        version2: *const u16,
+        result: *mut i32,
+    ) -> i32 {
+        type FnType = unsafe extern "system" fn(*const u16, *const u16, *mut i32) -> i32;
+        let ptr = get_proc("CompareBrowserVersions");
+        if ptr.is_null() {
+            return -2147467259i32;
+        }
+        let func: FnType = std::mem::transmute(ptr);
+        func(version1, version2, result)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn CreateCoreWebView2Environment(
+        environmentcreatedhandler: *mut c_void,
+    ) -> i32 {
+        type FnType = unsafe extern "system" fn(*mut c_void) -> i32;
+        let ptr = get_proc("CreateCoreWebView2Environment");
+        if ptr.is_null() {
+            return -2147467259i32;
+        }
+        let func: FnType = std::mem::transmute(ptr);
+        func(environmentcreatedhandler)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn CreateCoreWebView2EnvironmentWithOptions(
+        browserexecutablefolder: *const u16,
+        userdatafolder: *const u16,
+        environmentoptions: *mut c_void,
+        environmentcreatedhandler: *mut c_void,
+    ) -> i32 {
+        type FnType =
+            unsafe extern "system" fn(*const u16, *const u16, *mut c_void, *mut c_void) -> i32;
+        let ptr = get_proc("CreateCoreWebView2EnvironmentWithOptions");
+        if ptr.is_null() {
+            return -2147467259i32;
+        }
+        let func: FnType = std::mem::transmute(ptr);
+        func(
+            browserexecutablefolder,
+            userdatafolder,
+            environmentoptions,
+            environmentcreatedhandler,
+        )
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn GetAvailableCoreWebView2BrowserVersionString(
+        browserexecutablefolder: *const u16,
+        versioninfo: *mut *mut u16,
+    ) -> i32 {
+        type FnType = unsafe extern "system" fn(*const u16, *mut *mut u16) -> i32;
+        let ptr = get_proc("GetAvailableCoreWebView2BrowserVersionString");
+        if ptr.is_null() {
+            return -2147467259i32;
+        }
+        let func: FnType = std::mem::transmute(ptr);
+        func(browserexecutablefolder, versioninfo)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "system" fn GetAvailableCoreWebView2BrowserVersionStringWithOptions(
+        browserexecutablefolder: *const u16,
+        environmentoptions: *mut c_void,
+        versioninfo: *mut *mut u16,
+    ) -> i32 {
+        type FnType = unsafe extern "system" fn(*const u16, *mut c_void, *mut *mut u16) -> i32;
+        let ptr = get_proc("GetAvailableCoreWebView2BrowserVersionStringWithOptions");
+        if ptr.is_null() {
+            return -2147467259i32;
+        }
+        let func: FnType = std::mem::transmute(ptr);
+        func(browserexecutablefolder, environmentoptions, versioninfo)
+    }
+}
+
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use oac_core::{
     audio::render_audiobook,
