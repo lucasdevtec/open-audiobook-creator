@@ -5,6 +5,7 @@ import {
   Cpu,
   Download,
   FileText,
+  FolderOpen,
   Headphones,
   Layers,
   Merge,
@@ -25,6 +26,8 @@ import {
   fetchSystemInfo,
   loadSampleProject,
   mergeChapterWithNext,
+  openOutputDirectory,
+  pickOutputDirectory,
   previewVoice,
   saveExportConfig,
   saveMetadata,
@@ -227,6 +230,32 @@ export default function App() {
       setProject(updated);
     } catch (err: any) {
       setErrorMessage(err?.message || 'Falha ao salvar opções de exportação.');
+    }
+  }
+
+  async function handlePickOutputFolder() {
+    if (!project) return;
+    try {
+      const selected = await pickOutputDirectory(project.export_config.output_dir);
+      if (selected) {
+        await handleExportConfigChange({
+          ...project.export_config,
+          output_dir: selected,
+        });
+        setStatusMessage(`Pasta de saída definida para: ${selected}`);
+      }
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Não foi possível abrir o seletor de pasta.');
+    }
+  }
+
+  async function handleOpenOutputFolder(pathToOpen?: string) {
+    const target = pathToOpen || project?.export_config.output_dir;
+    if (!target) return;
+    try {
+      await openOutputDirectory(target);
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Não foi possível abrir a pasta no sistema.');
     }
   }
 
@@ -1192,23 +1221,38 @@ export default function App() {
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="space-y-3 text-xs">
                     <div>
-                      <label className="block text-slate-400 mb-1">Pasta de Saída</label>
-                      <input
-                        type="text"
-                        value={project.export_config.output_dir}
-                        onChange={(e) =>
-                          handleExportConfigChange({
-                            ...project.export_config,
-                            output_dir: e.target.value,
-                          })
-                        }
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2"
-                      />
+                      <label className="block text-slate-400 mb-1">
+                        Pasta de Saída (Onde salvar o Audiobook)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={project.export_config.output_dir}
+                          onChange={(e) =>
+                            handleExportConfigChange({
+                              ...project.export_config,
+                              output_dir: e.target.value,
+                            })
+                          }
+                          placeholder="Ex: /home/usuario/Audiobooks"
+                          className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-slate-100 focus:outline-none focus:border-indigo-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handlePickOutputFolder}
+                          className="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold flex items-center gap-1.5 shrink-0 transition shadow"
+                          title="Selecionar pasta no computador"
+                        >
+                          <FolderOpen className="w-4 h-4" />
+                          Escolher Pasta...
+                        </button>
+                      </div>
                     </div>
+
                     <div>
-                      <label className="block text-slate-400 mb-1">Bitrate (kbps)</label>
+                      <label className="block text-slate-400 mb-1">Bitrate de Áudio (kbps)</label>
                       <input
                         type="number"
                         value={project.export_config.bitrate_kbps}
@@ -1279,6 +1323,16 @@ export default function App() {
                           <span className="text-indigo-300 font-semibold">
                             {renderResult.total_duration_secs.toFixed(1)}s
                           </span>
+                        </div>
+                        <div className="pt-2">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenOutputFolder(project.export_config.output_dir)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 font-medium inline-flex items-center gap-1.5 transition"
+                          >
+                            <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
+                            Abrir Pasta de Saída no Sistema
+                          </button>
                         </div>
                       </div>
 

@@ -220,6 +220,36 @@ export async function saveExportConfig(export_config: ExportConfig): Promise<Boo
   return res.json();
 }
 
+export async function pickOutputDirectory(currentDir?: string): Promise<string | null> {
+  const desktop = getDesktopBridge();
+  if (desktop) {
+    return desktop.invoke<string | null>('pick_output_dir', {
+      current_dir: currentDir ?? null,
+    });
+  }
+  const res = await fetch(`${API_BASE}/api/project/pick-output-dir`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ current_dir: currentDir ?? null }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  const data = (await res.json()) as { path: string | null };
+  return data.path ?? null;
+}
+
+export async function openOutputDirectory(path: string): Promise<void> {
+  const desktop = getDesktopBridge();
+  if (desktop) {
+    await desktop.invoke('open_output_dir', { path });
+    return;
+  }
+  await fetch(`${API_BASE}/api/project/open-output-dir`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+}
+
 export async function previewVoice(
   text: string,
   tts_config: TtsConfig

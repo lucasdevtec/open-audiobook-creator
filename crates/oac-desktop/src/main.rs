@@ -76,6 +76,11 @@ enum UserEvent {
         ok: bool,
         payload: Value,
     },
+    #[cfg(target_os = "linux")]
+    PickDirectory {
+        id: String,
+        current_dir: Option<String>,
+    },
 }
 
 #[derive(Serialize)]
@@ -83,6 +88,94 @@ struct VoicePreviewResponse {
     audio_base64: String,
     mime_type: String,
     used_engine: String,
+}
+
+fn default_audiobooks_dir() -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home)
+            .join("Audiobooks")
+            .to_string_lossy()
+            .to_string();
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        return PathBuf::from(profile)
+            .join("Audiobooks")
+            .to_string_lossy()
+            .to_string();
+    }
+    "./output".to_string()
+}
+
+fn open_directory_in_os(path: &str) -> Result<(), String> {
+    let dir = Path::new(path);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pick_directory_non_linux(current_dir: Option<&str>) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let initial = current_dir.unwrap_or("").replace('\'', "''");
+        let ps_script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $f = New-Object System.Windows.Forms.FolderBrowserDialog; \
+             $f.Description = 'Escolher Pasta de Saída do Audiobook'; \
+             if ('{initial}' -ne '' -and (Test-Path '{initial}')) {{ $f.SelectedPath = '{initial}' }}; \
+             if ($f.ShowDialog() -eq 'OK') {{ [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $f.SelectedPath }}"
+        );
+        if let Ok(out) = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Sta", "-Command", &ps_script])
+            .output()
+        {
+            let selected = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !selected.is_empty() {
+                return Some(selected);
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = current_dir;
+        if let Ok(out) = std::process::Command::new("osascript")
+            .args([
+                "-e",
+                "POSIX path of (choose folder with prompt \"Escolher Pasta de Saída do Audiobook\")",
+            ])
+            .output()
+        {
+            let selected = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !selected.is_empty() {
+                return Some(selected);
+            }
+        }
+        None
+    }
 }
 
 fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Value, String> {
@@ -106,7 +199,14 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
         }
 
         "load_sample_project" => {
-            let proj = BookProject::from_sample_pdf().map_err(|e| e.to_string())?;
+            let prev = state.current_project.lock().ok().map(|p| p.clone());
+            let mut proj = BookProject::from_sample_pdf().map_err(|e| e.to_string())?;
+            if let Some(prev_proj) = prev {
+                proj.export_config = prev_proj.export_config;
+                proj.tts_config = prev_proj.tts_config;
+            } else {
+                proj.export_config.output_dir = default_audiobooks_dir();
+            }
             *state
                 .current_project
                 .lock()
@@ -128,9 +228,9 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
                 .decode(data_base64)
                 .map_err(|e| format!("Falha ao decodificar arquivo: {e}"))?;
 
-            let cleaner_opts = state
-                .current_project
-                .lock()
+            let prev = state.current_project.lock().ok().map(|p| p.clone());
+            let cleaner_opts = prev
+                .as_ref()
                 .map(|p| p.cleaner_options.clone())
                 .unwrap_or_default();
 
@@ -141,8 +241,12 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
                 .and_then(|s| s.to_str())
                 .unwrap_or("Livro Importado");
 
-            let proj = BookProject::from_bytes(&bytes, format, Some(stem), cleaner_opts)
+            let mut proj = BookProject::from_bytes(&bytes, format, Some(stem), cleaner_opts)
                 .map_err(|e| e.to_string())?;
+            if let Some(prev_proj) = prev {
+                proj.export_config = prev_proj.export_config;
+                proj.tts_config = prev_proj.tts_config;
+            }
             *state
                 .current_project
                 .lock()
@@ -155,13 +259,17 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Caminho não informado".to_string())?;
-            let cleaner_opts = state
-                .current_project
-                .lock()
+            let prev = state.current_project.lock().ok().map(|p| p.clone());
+            let cleaner_opts = prev
+                .as_ref()
                 .map(|p| p.cleaner_options.clone())
                 .unwrap_or_default();
-            let proj =
+            let mut proj =
                 BookProject::from_file(Path::new(path), cleaner_opts).map_err(|e| e.to_string())?;
+            if let Some(prev_proj) = prev {
+                proj.export_config = prev_proj.export_config;
+                proj.tts_config = prev_proj.tts_config;
+            }
             *state
                 .current_project
                 .lock()
@@ -291,6 +399,22 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
             Ok(serde_json::to_value(guard.clone()).map_err(|e| e.to_string())?)
         }
 
+        #[cfg(not(target_os = "linux"))]
+        "pick_output_dir" => {
+            let current_dir = args.get("current_dir").and_then(|v| v.as_str());
+            let chosen = pick_directory_non_linux(current_dir);
+            Ok(json!(chosen))
+        }
+
+        "open_output_dir" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("./output");
+            open_directory_in_os(path)?;
+            Ok(json!({ "ok": true }))
+        }
+
         "preview_voice" => {
             let text = args
                 .get("text")
@@ -326,8 +450,9 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
                 .map_err(|_| "Falha ao ler projeto".to_string())?
                 .clone();
 
+            let cache_dir = std::env::temp_dir().join("oac-cache");
             let progress_handle = state.render_progress.clone();
-            let artifact = render_audiobook(&mut project, &PathBuf::from(".oac-cache"), |prog| {
+            let artifact = render_audiobook(&mut project, &cache_dir, |prog| {
                 if let Ok(mut g) = progress_handle.lock() {
                     *g = Some(prog);
                 }
@@ -391,7 +516,7 @@ fn main() -> anyhow::Result<()> {
         .with_target(false)
         .init();
 
-    let initial_project = BookProject::from_sample_pdf().or_else(|_| {
+    let mut initial_project = BookProject::from_sample_pdf().or_else(|_| {
         BookProject::from_bytes(
             b"Capitulo 1\n\nBem-vindo ao Open Audiobook Creator.",
             SourceFormat::Txt,
@@ -399,6 +524,7 @@ fn main() -> anyhow::Result<()> {
             CleanerOptions::default(),
         )
     })?;
+    initial_project.export_config.output_dir = default_audiobooks_dir();
 
     let state = DesktopState {
         current_project: Arc::new(Mutex::new(initial_project)),
@@ -427,6 +553,21 @@ fn main() -> anyhow::Result<()> {
             let parsed: Result<IpcEnvelope, _> = serde_json::from_str(&body);
             if let Ok(env) = parsed {
                 tracing::info!("IPC nativo recebido: {}", env.cmd);
+
+                #[cfg(target_os = "linux")]
+                if env.cmd == "pick_output_dir" {
+                    let current_dir = env
+                        .args
+                        .get("current_dir")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let _ = proxy.send_event(UserEvent::PickDirectory {
+                        id: env.id,
+                        current_dir,
+                    });
+                    return;
+                }
+
                 let st = ipc_state.clone();
                 let prx = proxy.clone();
                 std::thread::spawn(move || {
@@ -467,6 +608,49 @@ fn main() -> anyhow::Result<()> {
                 ..
             } => {
                 *control_flow = ControlFlow::Exit;
+            }
+            #[cfg(target_os = "linux")]
+            Event::UserEvent(UserEvent::PickDirectory { id, current_dir }) => {
+                use gtk::prelude::*;
+                use tao::platform::unix::WindowExtUnix;
+
+                let gtk_win = window.gtk_window();
+                let dialog = gtk::FileChooserDialog::with_buttons(
+                    Some("Escolher Pasta de Saída do Audiobook"),
+                    Some(gtk_win),
+                    gtk::FileChooserAction::SelectFolder,
+                    &[
+                        ("Cancelar", gtk::ResponseType::Cancel),
+                        ("Selecionar Pasta", gtk::ResponseType::Accept),
+                    ],
+                );
+                if let Some(dir) = current_dir {
+                    let p = Path::new(&dir);
+                    if p.exists() {
+                        let _ = dialog.set_current_folder(p);
+                    } else if let Some(parent) = p.parent() {
+                        if parent.exists() {
+                            let _ = dialog.set_current_folder(parent);
+                        }
+                    }
+                }
+                let chosen = if dialog.run() == gtk::ResponseType::Accept {
+                    dialog.filename().map(|p| p.to_string_lossy().to_string())
+                } else {
+                    None
+                };
+                unsafe {
+                    dialog.destroy();
+                }
+
+                if let (Ok(id_json), Ok(payload_json)) = (
+                    serde_json::to_string(&id),
+                    serde_json::to_string(&json!(chosen)),
+                ) {
+                    let script =
+                        format!("window.__OAC_RESOLVE__({id_json}, true, {payload_json});");
+                    let _ = webview.evaluate_script(&script);
+                }
             }
             Event::UserEvent(UserEvent::IpcReply { id, ok, payload }) => {
                 if let Ok(id_json) = serde_json::to_string(&id) {

@@ -6,8 +6,15 @@ cd "${ROOT_DIR}"
 mkdir -p "${ROOT_DIR}/dist"
 
 echo "================================================================"
-echo "📦 Empacotador Desktop Nativo (.AppImage + .exe) — Open Audiobook Creator"
+echo "📦 Empacotador Standalone All-in-One (.AppImage + .exe)"
+echo "   Inclui: Motores Kokoro-82M + Piper TTS + Modelos de Voz ONNX"
 echo "================================================================"
+
+# 0. Garantir que modelos e binários locais existam antes de empacotar
+if [[ ! -f "${ROOT_DIR}/models/kokoro-v1_0.onnx" || ! -d "${ROOT_DIR}/bin/piper" ]]; then
+  echo "➡️  [0/4] Baixando modelos e motores TTS locais para embutir..."
+  bash "${ROOT_DIR}/scripts/install-tts-models.sh"
+fi
 
 # 1. Compilar Frontend React (ui/dist) para embutir no executável Rust
 echo "➡️  [1/4] Compilando interface gráfica (React + Vite)..."
@@ -17,17 +24,47 @@ npm --prefix "${ROOT_DIR}/ui" run build
 echo "➡️  [2/4] Compilando binários Linux x86_64 Release..."
 cargo build --release --workspace
 
-# 3. Empacotar .AppImage (Linux — Janela Desktop Nativa GTK/WebKit sem servidor HTTP)
-echo "➡️  [3/4] Gerando pacote dist/Open-Audiobook-Creator-0.1.0-x86_64.AppImage..."
+# 3. Empacotar .AppImage All-in-One (Binários + Runtime Kokoro/Piper + Modelos ONNX embutidos)
+echo "➡️  [3/4] Montando AppDir completo com motores TTS e vozes neurais..."
 rm -rf /tmp/Oac.AppDir
-mkdir -p /tmp/Oac.AppDir/usr/bin
+RES_DIR="/tmp/Oac.AppDir/usr/lib/open-audiobook-creator"
+mkdir -p /tmp/Oac.AppDir/usr/bin "${RES_DIR}/bin" "${RES_DIR}/models" "${RES_DIR}/scripts"
+
 cp "${ROOT_DIR}/target/release/open-audiobook-creator" /tmp/Oac.AppDir/usr/bin/open-audiobook-creator
 cp "${ROOT_DIR}/target/release/oac" /tmp/Oac.AppDir/usr/bin/oac
+
+# Copiar binários Piper TTS e wrappers CLI
+cp -a "${ROOT_DIR}/bin/piper" "${RES_DIR}/bin/"
+cp -a "${ROOT_DIR}/bin/piper-tts" "${RES_DIR}/bin/"
+cp -a "${ROOT_DIR}/bin/kokoro-tts" "${RES_DIR}/bin/"
+chmod +x "${RES_DIR}/bin/kokoro-tts" "${RES_DIR}/bin/piper-tts" "${RES_DIR}/bin/piper/piper"
+cp "${ROOT_DIR}/scripts/kokoro_bridge.py" "${RES_DIR}/scripts/kokoro_bridge.py"
+chmod +x "${RES_DIR}/scripts/kokoro_bridge.py"
+
+# Copiar bibliotecas Python do Kokoro (excluindo ziglang de compilação e provider ROCm de 490MB)
+SITE_PKGS="$(find "${ROOT_DIR}/.venv/lib" -maxdepth 3 -name "site-packages" | head -n 1)"
+if [[ -n "${SITE_PKGS}" && -d "${SITE_PKGS}" ]]; then
+  echo "   Embutindo runtime Python do Kokoro-82M (kokoro-onnx, onnxruntime CPU, espeakng)..."
+  mkdir -p "${RES_DIR}/python-site-packages"
+  rsync -a \
+    --exclude='ziglang*' \
+    --exclude='cargo_zigbuild*' \
+    --exclude='pip*' \
+    --exclude='*rocm*.so*' \
+    --exclude='__pycache__' \
+    "${SITE_PKGS}/" "${RES_DIR}/python-site-packages/"
+fi
+
+# Copiar todos os modelos ONNX (Kokoro-82M + Vozes Piper PT-BR/EN)
+echo "   Embutindo modelos de voz ONNX (Kokoro-82M + Piper PT-BR/EN)..."
+cp -f "${ROOT_DIR}"/models/*.onnx* "${RES_DIR}/models/"
+cp -f "${ROOT_DIR}/models/voices-v1.0.bin" "${RES_DIR}/models/"
 
 cat << 'EOF' > /tmp/Oac.AppDir/AppRun
 #!/usr/bin/env bash
 HERE="$(dirname "$(readlink -f "${0}")")"
-export PATH="${HERE}/usr/bin:${PATH}"
+export OAC_RESOURCE_DIR="${HERE}/usr/lib/open-audiobook-creator"
+export PATH="${OAC_RESOURCE_DIR}/bin:${OAC_RESOURCE_DIR}/bin/piper:${HERE}/usr/bin:${PATH}"
 export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 if [[ $# -gt 0 ]]; then
   exec "${HERE}/usr/bin/oac" "$@"
@@ -75,6 +112,6 @@ fi
 cp "${ROOT_DIR}/target/x86_64-pc-windows-gnu/release/open-audiobook-creator.exe" "${ROOT_DIR}/dist/Open-Audiobook-Creator-0.1.0-x64.exe"
 
 echo "================================================================"
-echo "🎉 Pacotes Desktop Nativos gerados com sucesso em dist/:"
+echo "🎉 Pacotes Desktop All-in-One gerados com sucesso em dist/:"
 ls -lh "${ROOT_DIR}/dist/"
 echo "================================================================"

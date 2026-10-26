@@ -36,18 +36,55 @@ pub fn run_diagnostics() -> EngineDiagnostics {
     }
 }
 
-pub fn resolve_resource_dirs() -> Vec< std::path::PathBuf > {
-    let mut dirs = vec![std::path::PathBuf::from(".")];
+pub fn resolve_resource_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(res_dir) = std::env::var("OAC_RESOURCE_DIR") {
+        dirs.push(std::path::PathBuf::from(res_dir));
+    }
+    if let Ok(appdir) = std::env::var("APPDIR") {
+        let appdir_path = std::path::PathBuf::from(appdir);
+        dirs.push(appdir_path.join("usr/lib/open-audiobook-creator"));
+        dirs.push(appdir_path.clone());
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             dirs.push(exe_dir.to_path_buf());
-            // Linux .deb / AppImage & macOS .app bundle resource locations
             dirs.push(exe_dir.join("../lib/open-audiobook-creator"));
             dirs.push(exe_dir.join("../Resources"));
+            if let Some(parent) = exe_dir.parent() {
+                dirs.push(parent.to_path_buf());
+                if let Some(grandparent) = parent.parent() {
+                    dirs.push(grandparent.to_path_buf());
+                }
+            }
         }
     }
+    if let Ok(appimage) = std::env::var("APPIMAGE") {
+        let appimage_path = std::path::PathBuf::from(appimage);
+        if let Some(appimage_dir) = appimage_path.parent() {
+            dirs.push(appimage_dir.to_path_buf());
+            if let Some(parent) = appimage_dir.parent() {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+    }
+    if let Ok(owd) = std::env::var("OWD") {
+        let owd_path = std::path::PathBuf::from(owd);
+        dirs.push(owd_path.clone());
+        if let Some(parent) = owd_path.parent() {
+            dirs.push(parent.to_path_buf());
+        }
+    }
+
+    dirs.push(std::path::PathBuf::from("."));
+    dirs.push(std::path::PathBuf::from(".."));
+
     if let Ok(home) = std::env::var("HOME") {
         dirs.push(std::path::PathBuf::from(home).join(".local/share/open-audiobook-creator"));
+    }
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        dirs.push(std::path::PathBuf::from(local_appdata).join("open-audiobook-creator"));
     }
     dirs
 }
@@ -447,15 +484,24 @@ fn try_synthesize_kokoro(text: &str, config: &TtsConfig, output_wav: &Path) -> R
         .strip_prefix("kokoro-")
         .unwrap_or(&config.voice_id);
 
-    let mut child = Command::new(&bin)
-        .arg("--voice")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("--voice")
         .arg(voice_code)
         .arg("--speed")
         .arg(config.speed.to_string())
         .arg("--style")
         .arg(config.narration_style.as_str())
         .arg("--output")
-        .arg(output_wav)
+        .arg(output_wav);
+
+    if let Some(model_file) = resolve_model_file(Path::new(&config.models_dir), "kokoro-v1_0.onnx")
+    {
+        if let Some(models_dir) = model_file.parent() {
+            cmd.arg("--models-dir").arg(models_dir);
+        }
+    }
+
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
