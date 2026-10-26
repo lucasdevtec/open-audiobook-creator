@@ -201,6 +201,8 @@ pub struct TtsConfig {
     pub engine: TtsEngineKind,
     pub voice_id: String,
     #[serde(default)]
+    pub dialogue_voice_id: Option<String>,
+    #[serde(default)]
     pub narration_style: NarrationStyle,
     pub speed: f32,
     pub sentence_pause_ms: u32,
@@ -217,6 +219,7 @@ impl Default for TtsConfig {
         Self {
             engine: TtsEngineKind::Kokoro,
             voice_id: "kokoro-blend_cronista".to_string(),
+            dialogue_voice_id: None,
             narration_style: NarrationStyle::Storyteller,
             speed: 0.94,
             sentence_pause_ms: 420,

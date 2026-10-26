@@ -570,6 +570,26 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
             Ok(serde_json::to_value(resp).map_err(|e| e.to_string())?)
         }
 
+        "get_audio_file_base64" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "Caminho do arquivo ausente".to_string())?;
+            let path = Path::new(path_str);
+            let bytes = std::fs::read(path).map_err(|e| format!("Falha ao ler áudio: {e}"))?;
+            let mime = if path_str.ends_with(".m4b") || path_str.ends_with(".mp4") || path_str.ends_with(".m4a") {
+                "audio/mp4"
+            } else if path_str.ends_with(".mp3") {
+                "audio/mpeg"
+            } else {
+                "audio/wav"
+            };
+            Ok(json!({
+                "audio_base64": BASE64.encode(bytes),
+                "mime_type": mime
+            }))
+        }
+
         "start_render" => {
             let mut project = state
                 .current_project

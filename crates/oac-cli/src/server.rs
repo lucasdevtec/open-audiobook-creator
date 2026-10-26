@@ -106,6 +106,7 @@ pub async fn run_http_server(port: u16, open_window: bool) -> anyhow::Result<()>
         .route("/api/project/tts", post(update_tts_config))
         .route("/api/project/export-config", post(update_export_config))
         .route("/api/tts/preview", post(preview_voice))
+        .route("/api/audio/data", post(get_audio_data))
         .route("/api/render/start", post(start_render))
         .route("/api/render/progress", get(get_render_progress))
         .layer(DefaultBodyLimit::max(120 * 1024 * 1024))
@@ -379,6 +380,30 @@ async fn preview_voice(
         audio_base64: BASE64.encode(bytes),
         mime_type: "audio/wav".to_string(),
         used_engine,
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct AudioDataRequest {
+    pub path: String,
+}
+
+async fn get_audio_data(
+    Json(payload): Json<AudioDataRequest>,
+) -> Result<Json<VoicePreviewResponse>, (StatusCode, String)> {
+    let bytes = std::fs::read(&payload.path)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Falha ao ler áudio: {e}")))?;
+    let mime = if payload.path.ends_with(".m4b") || payload.path.ends_with(".mp4") {
+        "audio/mp4".to_string()
+    } else if payload.path.ends_with(".mp3") {
+        "audio/mpeg".to_string()
+    } else {
+        "audio/wav".to_string()
+    };
+    Ok(Json(VoicePreviewResponse {
+        audio_base64: BASE64.encode(bytes),
+        mime_type: mime,
+        used_engine: "player".to_string(),
     }))
 }
 

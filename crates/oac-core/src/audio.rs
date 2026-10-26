@@ -281,23 +281,28 @@ pub fn concatenate_wav_files(
     let mut writer =
         WavWriter::create(output, spec).map_err(|e| OacError::AudioError(e.to_string()))?;
     let pause_samples = ((inter_chunk_pause_ms as u64 * sample_rate as u64) / 1000) as usize;
-    let mut total_samples = 0u64;
 
+    let mut samples_buffer = Vec::new();
     for (idx, input_path) in inputs.iter().enumerate() {
         for sample in read_wav_samples_as_i16(input_path) {
-            writer
-                .write_sample(sample)
-                .map_err(|e| OacError::AudioError(e.to_string()))?;
-            total_samples += 1;
+            samples_buffer.push(sample);
         }
         if idx + 1 < inputs.len() {
             for _ in 0..pause_samples {
-                writer
-                    .write_sample(0i16)
-                    .map_err(|e| OacError::AudioError(e.to_string()))?;
-                total_samples += 1;
+                samples_buffer.push(0i16);
             }
         }
+    }
+
+    // Normalização de Loudness EBU R128 (-16.0 LUFS) e Limiter True-Peak (-1.0 dBTP)
+    crate::mastering::normalize_to_ebu_r128(&mut samples_buffer, sample_rate);
+
+    let mut total_samples = 0u64;
+    for sample in samples_buffer {
+        writer
+            .write_sample(sample)
+            .map_err(|e| OacError::AudioError(e.to_string()))?;
+        total_samples += 1;
     }
 
     writer

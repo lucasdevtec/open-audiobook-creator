@@ -28,6 +28,12 @@ pub fn extract_pdf_bytes(bytes: &[u8]) -> Result<ExtractedDocument> {
         }
     }
 
+    // Tentar extrair automaticamente a imagem de capa da primeira página
+    if let Some((b64, mime)) = extract_pdf_cover_image(&doc) {
+        metadata.cover_image_base64 = Some(b64);
+        metadata.cover_mime_type = Some(mime);
+    }
+
     let pages_map = doc.get_pages();
     let mut pages = Vec::with_capacity(pages_map.len());
 
@@ -244,5 +250,67 @@ pub fn generate_sample_pdf_bytes() -> Result<Vec<u8>> {
     doc.save_to(&mut buffer)
         .map_err(|e| OacError::PdfError(e.to_string()))?;
     Ok(buffer)
+}
+
+fn extract_pdf_cover_image(doc: &Document) -> Option<(String, String)> {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+
+    let pages = doc.get_pages();
+    let first_page_id = pages.get(&1)?;
+    let page_obj = doc.get_object(*first_page_id).ok()?;
+    let page_dict = page_obj.as_dict().ok()?;
+
+    let res_obj = page_dict.get(b"Resources").ok()?;
+    let res_dict = match res_obj {
+        Object::Reference(r) => doc.get_object(*r).ok()?.as_dict().ok()?,
+        Object::Dictionary(d) => d,
+        _ => return None,
+    };
+
+    let xobject_obj = res_dict.get(b"XObject").ok()?;
+    let xobject_dict = match xobject_obj {
+        Object::Reference(r) => doc.get_object(*r).ok()?.as_dict().ok()?,
+        Object::Dictionary(d) => d,
+        _ => return None,
+    };
+
+    for (_, obj) in xobject_dict.iter() {
+        let stream = match obj {
+            Object::Reference(r) => doc.get_object(*r).ok()?.as_stream().ok()?,
+            Object::Stream(s) => s,
+            _ => continue,
+        };
+
+        if let Ok(subtype) = stream.dict.get(b"Subtype") {
+            if let Ok(name) = subtype.as_name() {
+                if name == b"Image" {
+                    let is_jpeg = if let Ok(filter) = stream.dict.get(b"Filter") {
+                        match filter {
+                            Object::Name(n) => n == b"DCTDecode",
+                            Object::Array(arr) => arr.iter().any(|f| f.as_name().map(|n| n == b"DCTDecode").unwrap_or(false)),
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+
+                    if is_jpeg && !stream.content.is_empty() {
+                        let b64 = BASE64.encode(&stream.content);
+                        return Some((b64, "image/jpeg".to_string()));
+                    }
+
+                    let raw = stream.decompressed_content().unwrap_or_else(|_| stream.content.clone());
+                    if raw.starts_with(&[0xFF, 0xD8, 0xFF]) {
+                        let b64 = BASE64.encode(&raw);
+                        return Some((b64, "image/jpeg".to_string()));
+                    } else if raw.starts_with(&[0x89, b'P', b'N', b'G']) {
+                        let b64 = BASE64.encode(&raw);
+                        return Some((b64, "image/png".to_string()));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 

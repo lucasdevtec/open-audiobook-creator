@@ -306,3 +306,17 @@ export async function fetchWizardProgress(): Promise<WizardProgress | null> {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchAudioData(path: string): Promise<{ audio_base64: string; mime_type: string }> {
+  const desktop = getDesktopBridge();
+  if (desktop) {
+    return desktop.invoke<{ audio_base64: string; mime_type: string }>('get_audio_file_base64', { path });
+  }
+  const res = await fetch(`${API_BASE}/api/audio/data`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

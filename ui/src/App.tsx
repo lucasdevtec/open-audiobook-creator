@@ -1,27 +1,34 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   BookOpen,
   CheckCircle2,
+  CheckSquare,
   Cpu,
   Download,
   FileText,
   FolderOpen,
   Headphones,
+  Image as ImageIcon,
   Layers,
   Merge,
   Mic,
+  Pause,
   Play,
   Plus,
   RefreshCw,
   Settings2,
   Sparkles,
+  Square,
+  Trash2,
   Upload,
+  Users,
   Volume2,
   Wand2,
 } from 'lucide-react';
 import {
   addCustomChapter,
   applyCleanerOptions,
+  fetchAudioData,
   fetchProject,
   fetchSystemInfo,
   fetchWizardProgress,
@@ -53,6 +60,13 @@ import {
 
 type StudioTab = 'import' | 'chapters' | 'voices' | 'render';
 
+function formatTime(sec: number): string {
+  if (isNaN(sec) || sec <= 0) return '00:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<StudioTab>('import');
   const [project, setProject] = useState<BookProject | null>(null);
@@ -71,6 +85,13 @@ export default function App() {
 
   const [isRendering, setIsRendering] = useState(false);
   const [renderResult, setRenderResult] = useState<RenderArtifact | null>(null);
+  const [audioPlayerUrl, setAudioPlayerUrl] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1.0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -81,6 +102,99 @@ export default function App() {
   useEffect(() => {
     initStudio();
   }, []);
+
+  useEffect(() => {
+    if (renderResult?.primary_output_path) {
+      loadRenderedAudio(renderResult.primary_output_path);
+    }
+  }, [renderResult]);
+
+  async function loadRenderedAudio(path: string) {
+    try {
+      const data = await fetchAudioData(path);
+      const byteChars = atob(data.audio_base64);
+      const byteNumbers = new Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) {
+        byteNumbers[i] = byteChars.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: data.mime_type });
+      const url = URL.createObjectURL(blob);
+      setAudioPlayerUrl(url);
+    } catch (e) {
+      console.warn('Could not load audio for playback:', e);
+    }
+  }
+
+  function handleTogglePlay() {
+    if (!audioRef.current) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  }
+
+  function handleSeekTo(seconds: number) {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = seconds;
+    setCurrentTime(seconds);
+    if (!isPlaying) {
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  }
+
+  function handleChangeSpeed(rate: number) {
+    setPlaybackRate(rate);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = rate;
+    }
+  }
+
+  function handleCoverUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !project) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      const [header, b64] = result.split(',', 2);
+      const mime = header.split(';')[0].replace('data:', '') || 'image/jpeg';
+      handleMetadataChange({
+        ...project.metadata,
+        cover_image_base64: b64,
+        cover_mime_type: mime,
+      });
+      setStatusMessage('Imagem de capa atualizada!');
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function handleRemoveCover() {
+    if (!project) return;
+    handleMetadataChange({
+      ...project.metadata,
+      cover_image_base64: null,
+      cover_mime_type: null,
+    });
+    setStatusMessage('Capa removida.');
+  }
+
+  async function handleToggleAllChapters(enable: boolean) {
+    if (!project) return;
+    try {
+      let updated = project;
+      for (const ch of project.chapters) {
+        if (ch.enabled !== enable) {
+          updated = await updateChapter({ chapter_id: ch.id, enabled: enable });
+        }
+      }
+      setProject(updated);
+      setStatusMessage(enable ? 'Todos os capítulos foram habilitados.' : 'Todos os capítulos foram desabilitados.');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Erro ao alternar capítulos.');
+    }
+  }
 
   async function initStudio() {
     try {
@@ -621,6 +735,57 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Capa do Audiobook */}
+                    <div className="mt-5 pt-4 border-t border-slate-800 flex flex-col sm:flex-row items-center gap-4">
+                      <div className="relative group shrink-0">
+                        {project.metadata.cover_image_base64 ? (
+                          <img
+                            src={`data:${project.metadata.cover_mime_type || 'image/jpeg'};base64,${project.metadata.cover_image_base64}`}
+                            alt="Capa do Audiobook"
+                            className="w-24 h-24 object-cover rounded-xl shadow-lg border border-slate-700 bg-slate-950"
+                          />
+                        ) : (
+                          <div className="w-24 h-24 rounded-xl border-2 border-dashed border-slate-700 bg-slate-950/60 flex flex-col items-center justify-center text-slate-500">
+                            <ImageIcon className="w-7 h-7 mb-1 text-slate-600" />
+                            <span className="text-[10px]">Sem capa</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex-1 space-y-1.5 text-left">
+                        <span className="block font-semibold text-xs text-slate-200">
+                          {project.metadata.cover_image_base64 ? 'Capa Embutida no M4B' : 'Adicionar Capa da Obra'}
+                        </span>
+                        <p className="text-[11px] text-slate-400">
+                          {project.metadata.cover_image_base64
+                            ? 'Arte embutida nos metadados ID3v2/MP4. Aparece no Apple Books, Audible e tocadores.'
+                            : 'Extraída automaticamente do PDF/EPUB ou selecione uma imagem (.jpg, .png) do computador.'}
+                        </p>
+                        <div className="flex items-center gap-2 pt-1">
+                          <label className="cursor-pointer px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs flex items-center gap-1.5 transition">
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>{project.metadata.cover_image_base64 ? 'Trocar Capa' : 'Escolher Capa (.jpg/.png)'}</span>
+                            <input
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp"
+                              onChange={handleCoverUpload}
+                              className="hidden"
+                            />
+                          </label>
+                          {project.metadata.cover_image_base64 && (
+                            <button
+                              type="button"
+                              onClick={handleRemoveCover}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-red-950/40 text-slate-400 hover:text-red-400 text-xs flex items-center gap-1 transition"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Remover</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Cleaner Rules Configuration */}
@@ -720,21 +885,47 @@ export default function App() {
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Chapter List Sidebar */}
                 <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col max-h-[75vh]">
-                  <div className="flex items-center justify-between mb-3 px-1">
+                  <div className="flex items-center justify-between mb-2 px-1">
                     <h2 className="text-sm font-semibold">
-                      Sumário / Capítulos ({project.chapters.length})
+                      Capítulos ({project.chapters.length})
                     </h2>
                     <button
                       onClick={handleAddChapter}
-                      className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-300 flex items-center gap-1"
+                      className="text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-300 flex items-center gap-1 transition"
                     >
                       <Plus className="w-3.5 h-3.5" /> Novo
+                    </button>
+                  </div>
+
+                  {/* Ações em Massa para Capítulos */}
+                  <div className="flex items-center gap-2 mb-3 px-1 text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAllChapters(true)}
+                      className="text-slate-400 hover:text-indigo-400 flex items-center gap-1 transition"
+                    >
+                      <CheckSquare className="w-3 h-3" /> Habilitar Todos
+                    </button>
+                    <span className="text-slate-600">•</span>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleAllChapters(false)}
+                      className="text-slate-400 hover:text-rose-400 flex items-center gap-1 transition"
+                    >
+                      <Square className="w-3 h-3" /> Desmarcar Todos
                     </button>
                   </div>
 
                   <div className="flex-1 overflow-y-auto space-y-2 pr-1">
                     {project.chapters.map((ch, idx) => {
                       const isSelected = ch.id === selectedChapterId;
+                      const words = ch.cleaned_text.split(/\s+/).filter(Boolean).length;
+                      const estSecs = Math.max(2, Math.round(words / 2.5));
+                      const durationStr =
+                        estSecs >= 60
+                          ? `~${Math.floor(estSecs / 60)}m ${estSecs % 60}s`
+                          : `~${estSecs}s`;
+
                       return (
                         <div
                           key={ch.id}
@@ -743,7 +934,7 @@ export default function App() {
                             isSelected
                               ? 'bg-indigo-950/60 border-indigo-500/80'
                               : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
-                          }`}
+                          } ${!ch.enabled ? 'opacity-50' : ''}`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2 min-w-0">
@@ -752,19 +943,21 @@ export default function App() {
                                 checked={ch.enabled}
                                 onClick={(e) => e.stopPropagation()}
                                 onChange={(e) => handleToggleChapter(ch.id, e.target.checked)}
-                                className="rounded border-slate-700 text-indigo-600"
+                                className="rounded border-slate-700 text-indigo-600 cursor-pointer"
+                                title={ch.enabled ? 'Capítulo ativo para narração' : 'Capítulo ignorado'}
                               />
-                              <span className="text-xs font-semibold truncate">{ch.title}</span>
+                              <span className="text-xs font-semibold truncate text-slate-100">
+                                {ch.title}
+                              </span>
                             </div>
-                            <span className="text-[11px] text-slate-400 shrink-0">
-                              {ch.chunks.length} blocos
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-900 border border-slate-800 text-indigo-300 font-mono shrink-0">
+                              {durationStr}
                             </span>
                           </div>
 
                           <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
                             <span>
-                              {ch.start_page ? `Pág. ${ch.start_page}` : 'Manual'} •{' '}
-                              {ch.cleaned_text.split(/\s+/).filter(Boolean).length} palavras
+                              {ch.start_page ? `Pág. ${ch.start_page}` : 'Manual'} • {words} palavras
                             </span>
                             {idx + 1 < project.chapters.length && (
                               <button
@@ -773,7 +966,7 @@ export default function App() {
                                   handleMergeChapter(ch.id);
                                 }}
                                 title="Mesclar com o próximo capítulo"
-                                className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+                                className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition"
                               >
                                 <Merge className="w-3 h-3" /> Mesclar abaixo
                               </button>
@@ -1073,6 +1266,39 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Multi-Vozes Inteligente para Diálogos e Personagens */}
+                      <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-slate-200 font-semibold flex items-center gap-1.5 text-xs">
+                            <Users className="w-3.5 h-3.5 text-indigo-400" />
+                            Multi-Vozes para Diálogos (Personagens)
+                          </label>
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800/60 font-medium">
+                            IA Literária
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
+                          Detecta automaticamente falas entre aspas ("...") ou travessões (—) e aplica uma voz contrastante para os personagens, mantendo o narrador na voz principal.
+                        </p>
+                        <select
+                          value={project.tts_config.dialogue_voice_id || ''}
+                          onChange={(e) =>
+                            handleTtsConfigChange({
+                              ...project.tts_config,
+                              dialogue_voice_id: e.target.value || null,
+                            })
+                          }
+                          className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                        >
+                          <option value="">Desativado (Mesma voz para narração e diálogos)</option>
+                          {systemInfo?.voices.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.name} ({v.language})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
                       <div>
                         <div className="flex justify-between mb-1">
                           <span className="text-slate-400">Velocidade Base da Narração</span>
@@ -1354,10 +1580,141 @@ export default function App() {
                       gerar o arquivo final com índice de capítulos.
                     </div>
                   ) : (
-                    <div className="space-y-4 text-xs">
+                    <div className="space-y-5 text-xs">
+                      {/* Player Integrado de Audiolivro com Onda Sonora (Waveform) */}
+                      <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+                        <audio
+                          ref={audioRef}
+                          src={audioPlayerUrl || undefined}
+                          onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
+                          onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
+                          onEnded={() => setIsPlaying(false)}
+                          className="hidden"
+                        />
+
+                        {/* Top Bar: Capa + Info da Obra */}
+                        <div className="flex items-center gap-3.5">
+                          {project.metadata.cover_image_base64 ? (
+                            <img
+                              src={`data:${project.metadata.cover_mime_type || 'image/jpeg'};base64,${project.metadata.cover_image_base64}`}
+                              alt="Capa"
+                              className="w-12 h-12 rounded-lg object-cover shadow border border-slate-800"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-lg bg-indigo-950/80 border border-indigo-800/60 flex items-center justify-center text-indigo-400">
+                              <Headphones className="w-6 h-6" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-bold text-sm text-slate-100 truncate">
+                              {project.metadata.title}
+                            </h4>
+                            <p className="text-[11px] text-slate-400 truncate">
+                              {project.metadata.author} • Narrador: {project.metadata.narrator}
+                            </p>
+                          </div>
+                          <span className="text-xs font-mono text-indigo-400 shrink-0 font-medium">
+                            {formatTime(currentTime)} / {formatTime(duration || renderResult.total_duration_secs)}
+                          </span>
+                        </div>
+
+                        {/* Visualizador de Onda Sonora (Waveform Interativo) */}
+                        <div
+                          onClick={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const clickX = e.clientX - rect.left;
+                            const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+                            const targetSec = ratio * (duration || renderResult.total_duration_secs);
+                            handleSeekTo(targetSec);
+                          }}
+                          className="h-14 bg-slate-900/90 hover:bg-slate-900 border border-slate-800/80 rounded-xl px-3 py-2 flex items-center justify-between gap-1 cursor-pointer transition select-none group"
+                          title="Clique na onda sonora para saltar no áudio"
+                        >
+                          {Array.from({ length: 48 }).map((_, barIdx) => {
+                            const totalSec = duration || renderResult.total_duration_secs || 1;
+                            const barTimeRatio = barIdx / 48;
+                            const isPlayed = currentTime / totalSec >= barTimeRatio;
+
+                            const pseudoHeight = Math.max(
+                              18,
+                              Math.round(
+                                20 +
+                                  Math.sin(barIdx * 0.45) * 16 +
+                                  Math.cos(barIdx * 0.8) * 12 +
+                                  ((barIdx * 7) % 15)
+                              )
+                            );
+
+                            return (
+                              <div
+                                key={barIdx}
+                                style={{ height: `${pseudoHeight}%` }}
+                                className={`flex-1 rounded-full transition-all duration-150 ${
+                                  isPlayed
+                                    ? 'bg-indigo-500 shadow-sm shadow-indigo-500/50'
+                                    : 'bg-slate-700/60 group-hover:bg-slate-600'
+                                }`}
+                              />
+                            );
+                          })}
+                        </div>
+
+                        {/* Controles de Reprodução e Velocidade */}
+                        <div className="flex items-center justify-between gap-3 pt-1">
+                          <div className="flex items-center gap-2.5">
+                            <button
+                              type="button"
+                              onClick={handleTogglePlay}
+                              className="w-10 h-10 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center shadow-lg shadow-indigo-600/30 transition transform active:scale-95 cursor-pointer"
+                            >
+                              {isPlaying ? (
+                                <Pause className="w-4 h-4 fill-current" />
+                              ) : (
+                                <Play className="w-4 h-4 fill-current ml-0.5" />
+                              )}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSeekTo(Math.max(0, currentTime - 10))}
+                              className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 transition"
+                              title="Voltar 10 segundos"
+                            >
+                              -10s
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSeekTo(Math.min(duration || renderResult.total_duration_secs, currentTime + 10))}
+                              className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 transition"
+                              title="Avançar 10 segundos"
+                            >
+                              +10s
+                            </button>
+                          </div>
+
+                          {/* Seletor de Velocidade de Reprodução */}
+                          <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5 text-[11px]">
+                            {[0.75, 1.0, 1.25, 1.5, 2.0].map((rate) => (
+                              <button
+                                key={rate}
+                                type="button"
+                                onClick={() => handleChangeSpeed(rate)}
+                                className={`px-2 py-1 rounded font-medium transition ${
+                                  playbackRate === rate
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                                }`}
+                              >
+                                {rate}x
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
                       <div className="bg-emerald-950/40 border border-emerald-700/60 rounded-xl p-4 space-y-1.5">
                         <div className="text-emerald-300 font-bold text-sm">
-                          ✅ Audiobook Exportado com Sucesso!
+                          ✅ Audiobook Exportado & Masterizado (-16 LUFS)!
                         </div>
                         <div>
                           <span className="text-slate-400">Arquivo Gerado: </span>
@@ -1383,9 +1740,9 @@ export default function App() {
                           <button
                             type="button"
                             onClick={() => handleOpenOutputFolder(project.export_config.output_dir)}
-                            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 font-medium inline-flex items-center gap-1.5 transition"
+                            className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium inline-flex items-center gap-1.5 transition shadow"
                           >
-                            <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
+                            <FolderOpen className="w-3.5 h-3.5" />
                             Abrir Pasta de Saída no Sistema
                           </button>
                         </div>
@@ -1396,20 +1753,36 @@ export default function App() {
                           Tabela de Capítulos Embutida no M4B ({renderResult.chapter_markers.length}{' '}
                           capítulos)
                         </h3>
+                        <p className="text-[11px] text-slate-400 mb-2">
+                          Clique em qualquer capítulo para ouvir diretamente:
+                        </p>
                         <div className="space-y-1.5">
-                          {renderResult.chapter_markers.map((m) => (
-                            <div
-                              key={m.index}
-                              className="bg-slate-950 border border-slate-800 rounded-lg px-3.5 py-2 flex items-center justify-between"
-                            >
-                              <span className="font-medium text-slate-200">
-                                #{m.index} — {m.title}
-                              </span>
-                              <span className="font-mono text-indigo-400">
-                                {(m.start_ms / 1000).toFixed(1)}s → {(m.end_ms / 1000).toFixed(1)}s
-                              </span>
-                            </div>
-                          ))}
+                          {renderResult.chapter_markers.map((m) => {
+                            const isCurrentChapter =
+                              currentTime >= m.start_ms / 1000 &&
+                              currentTime < m.end_ms / 1000;
+                            return (
+                              <div
+                                key={m.index}
+                                onClick={() => handleSeekTo(m.start_ms / 1000)}
+                                className={`border rounded-lg px-3.5 py-2.5 flex items-center justify-between cursor-pointer transition ${
+                                  isCurrentChapter
+                                    ? 'bg-indigo-950/70 border-indigo-500 text-white'
+                                    : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                                }`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <Play className={`w-3.5 h-3.5 ${isCurrentChapter ? 'text-indigo-400 fill-current' : 'text-slate-500'}`} />
+                                  <span className="font-medium text-slate-200">
+                                    #{m.index} — {m.title}
+                                  </span>
+                                </div>
+                                <span className="font-mono text-indigo-400 text-[11px]">
+                                  {(m.start_ms / 1000).toFixed(1)}s → {(m.end_ms / 1000).toFixed(1)}s
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     </div>

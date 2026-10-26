@@ -1,8 +1,11 @@
 pub mod audio;
 pub mod cleaner;
+pub mod dialogue;
 pub mod error;
+pub mod mastering;
 pub mod model;
 pub mod parser;
+pub mod text_normalizer;
 pub mod tts;
 
 use crate::cleaner::{clean_chapter_text, process_pages_into_chapters, split_text_into_chunks};

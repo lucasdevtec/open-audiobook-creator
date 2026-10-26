@@ -21,8 +21,13 @@ echo "➡️  [1/4] Compilando interface gráfica (React + Vite)..."
 npm --prefix "${ROOT_DIR}/ui" run build
 
 # 2. Compilar binários Linux Release (oac-desktop nativo + oac-cli)
-echo "➡️  [2/4] Compilando binários Linux x86_64 Release..."
-cargo build --release --workspace
+if [[ -f "${ROOT_DIR}/target/release/open-audiobook-creator" ]]; then
+  echo "➡️  [2/4] Compilando binário oac-cli Release..."
+  cargo build --release -p oac-cli
+else
+  echo "➡️  [2/4] Compilando binários Linux x86_64 Release..."
+  cargo build --release --workspace
+fi
 
 # 3. Empacotar .AppImage All-in-One (Binários + Runtime Kokoro/Piper + Modelos ONNX embutidos)
 echo "➡️  [3/4] Montando AppImage Linux All-in-One..."

@@ -62,6 +62,7 @@ export interface VoiceProfile {
 export interface TtsConfig {
   engine: TtsEngineKind;
   voice_id: string;
+  dialogue_voice_id?: string | null;
   narration_style: NarrationStyle;
   speed: number;
   sentence_pause_ms: number;

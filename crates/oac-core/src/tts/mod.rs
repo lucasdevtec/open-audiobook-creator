@@ -347,10 +347,70 @@ pub fn synthesize_chunk_to_wav(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Garante que mesmo textos brutos colados diretamente no Preview passem pela reparação literária
+    // 1. Reparação literária de quebras de linha e hifenizações de PDF
     let (cleaned_for_tts, _) = crate::cleaner::repair_literary_pdf_artifacts(raw_text);
-    let text = cleaned_for_tts.as_str();
 
+    // 2. Normalização fonética e numérica em português brasileiro
+    let normalized = crate::text_normalizer::normalize_portuguese_text(&cleaned_for_tts);
+    let text = if normalized.trim().is_empty() {
+        cleaned_for_tts.as_str()
+    } else {
+        normalized.as_str()
+    };
+
+    // 3. Multi-Vozes Inteligente para Diálogos
+    if let Some(ref dialogue_voice) = config.dialogue_voice_id {
+        if dialogue_voice != &config.voice_id && !dialogue_voice.trim().is_empty() {
+            let segments = crate::dialogue::segment_dialogues(text);
+            if segments.len() > 1 && segments.iter().any(|s| s.kind == crate::dialogue::SegmentKind::Dialogue) {
+                return synthesize_dialogue_segments_to_wav(&segments, config, dialogue_voice, output_wav);
+            }
+        }
+    }
+
+    synthesize_single_text_to_wav(text, config, output_wav)
+}
+
+fn synthesize_dialogue_segments_to_wav(
+    segments: &[crate::dialogue::TextSegment],
+    config: &TtsConfig,
+    dialogue_voice: &str,
+    output_wav: &Path,
+) -> Result<String> {
+    let mut seg_paths = Vec::new();
+    let temp_dir = std::env::temp_dir().join(format!("oac_dial_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir)?;
+
+    for (i, seg) in segments.iter().enumerate() {
+        let seg_path = temp_dir.join(format!("seg_{:03}.wav", i));
+        let mut seg_config = config.clone();
+
+        if seg.kind == crate::dialogue::SegmentKind::Dialogue {
+            seg_config.voice_id = dialogue_voice.to_string();
+        }
+
+        synthesize_single_text_to_wav(&seg.text, &seg_config, &seg_path)?;
+        seg_paths.push(seg_path);
+    }
+
+    crate::audio::concatenate_wav_files(&seg_paths, output_wav, 250)?;
+
+    for p in &seg_paths {
+        let _ = std::fs::remove_file(p);
+    }
+    let _ = std::fs::remove_dir(&temp_dir);
+
+    Ok(format!(
+        "Multi-Vozes Inteligente (Narrador: {} • Diálogos: {})",
+        config.voice_id, dialogue_voice
+    ))
+}
+
+fn synthesize_single_text_to_wav(
+    text: &str,
+    config: &TtsConfig,
+    output_wav: &Path,
+) -> Result<String> {
     match config.engine {
         TtsEngineKind::Piper => {
             match try_synthesize_piper(text, config, output_wav) {
