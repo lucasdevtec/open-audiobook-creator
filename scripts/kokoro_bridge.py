@@ -16,6 +16,28 @@ import sys
 import tempfile
 import time
 
+# Forçar streams padrão em UTF-8 em todos os ambientes e locales
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def fix_mojibake_if_any(text: str) -> str:
+    """
+    Recupera texto corrompido caso tenha sido lido acidentalmente como Latin-1/ANSI
+    em vez de UTF-8 (ex: 'Ãª' -> 'ê', 'â€“' -> '–').
+    """
+    if any(m in text for m in ("Ã", "â\x80", "\xc3")):
+        try:
+            candidate = text.encode("latin-1").decode("utf-8")
+            return candidate
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return text
+
 _UID = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "win")
 SOCKET_PATH = os.path.join(tempfile.gettempdir(), f"oac_kokoro_worker_v3_{_UID}.sock")
 WIN_TCP_PORT = 51423
@@ -181,7 +203,7 @@ def run_worker_daemon(model_path: str, voices_path: str) -> int:
                     voice = req["voice"]
                     speed = float(req["speed"])
                     style = req.get("style", "storyteller")
-                    text = req["text"]
+                    text = fix_mojibake_if_any(req["text"])
                     output = req["output"]
                     samples, sample_rate = synthesize_with_style(
                         kokoro, text, voice, speed, style
@@ -343,7 +365,11 @@ def main() -> int:
         print("Parâmetro --output é obrigatório.", file=sys.stderr)
         return 1
 
-    text = sys.stdin.read().strip()
+    try:
+        text = sys.stdin.buffer.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        text = sys.stdin.read().strip()
+    text = fix_mojibake_if_any(text)
     if not text:
         print("Nenhum texto recebido via stdin.", file=sys.stderr)
         return 1

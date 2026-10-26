@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+export ORT_LOG_SEVERITY_LEVEL="${ORT_LOG_SEVERITY_LEVEL:-3}"
+export PYTHONIOENCODING="utf-8"
+export PYTHONUTF8="1"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+export LANG="${LANG:-C.UTF-8}"
+
+# Prioridade 1: Python standalone embutido (ex: AppImage bundle / runtime portátil)
+if [[ -x "${ROOT_DIR}/python/bin/python3" ]]; then
+  exec "${ROOT_DIR}/python/bin/python3" "${ROOT_DIR}/scripts/kokoro_bridge.py" "$@"
+elif [[ -x "${ROOT_DIR}/.venv/bin/python" ]]; then
+  exec "${ROOT_DIR}/.venv/bin/python" "${ROOT_DIR}/scripts/kokoro_bridge.py" "$@"
+elif [[ -d "${ROOT_DIR}/python-site-packages" ]]; then
+  export PYTHONPATH="${ROOT_DIR}/python-site-packages:${PYTHONPATH:-}"
+  if command -v python3.12 >/dev/null 2>&1; then
+    exec python3.12 "${ROOT_DIR}/scripts/kokoro_bridge.py" "$@"
+  else
+    exec python3 "${ROOT_DIR}/scripts/kokoro_bridge.py" "$@"
+  fi
+else
+  if command -v python3.12 >/dev/null 2>&1; then
+    exec python3.12 "${ROOT_DIR}/scripts/kokoro_bridge.py" "$@"
+  else
+    exec python3 "${ROOT_DIR}/scripts/kokoro_bridge.py" "$@"
+  fi
+fi

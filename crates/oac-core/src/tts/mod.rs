@@ -446,6 +446,7 @@ fn try_synthesize_piper(text: &str, config: &TtsConfig, output_wav: &Path) -> Re
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
+    cmd.env("LC_ALL", "C.UTF-8").env("LANG", "C.UTF-8");
     let mut child = cmd
         .arg("--model")
         .arg(&model_path)
@@ -506,6 +507,10 @@ fn try_synthesize_kokoro(text: &str, config: &TtsConfig, output_wav: &Path) -> R
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000);
     }
+    cmd.env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .env("LC_ALL", "C.UTF-8")
+        .env("LANG", "C.UTF-8");
     cmd.arg("--voice")
         .arg(voice_code)
         .arg("--speed")

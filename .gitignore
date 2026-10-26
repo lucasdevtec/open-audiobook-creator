@@ -19,7 +19,9 @@ Thumbs.db
 # Local TTS models, binaries & generated audio cache
 .oac-cache/
 .venv/
-bin/
+bin/*
+!bin/kokoro-tts
+!bin/piper-tts
 dist/
 models/
 output/

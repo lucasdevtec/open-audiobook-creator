@@ -41,18 +41,25 @@ chmod +x "${RES_DIR}/bin/kokoro-tts" "${RES_DIR}/bin/piper-tts" "${RES_DIR}/bin/
 cp "${ROOT_DIR}/scripts/kokoro_bridge.py" "${RES_DIR}/scripts/kokoro_bridge.py"
 chmod +x "${RES_DIR}/scripts/kokoro_bridge.py"
 
-# Copiar bibliotecas Python do Kokoro (excluindo ziglang de compilação e provider ROCm de 490MB)
+# Embutir Python 3.12 Standalone e isolado do sistema hospedeiro
+echo "   Embutindo runtime Python 3.12 Standalone para Linux x86_64..."
+if [[ ! -f /tmp/cpython_linux_x64.tar.gz ]]; then
+  curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20250212/cpython-3.12.9+20250212-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -o /tmp/cpython_linux_x64.tar.gz
+fi
+tar -xzf /tmp/cpython_linux_x64.tar.gz -C "${RES_DIR}"
+
+# Copiar bibliotecas Python do Kokoro (kokoro-onnx, onnxruntime CPU, espeakng) para o Python embutido
 SITE_PKGS="$(find "${ROOT_DIR}/.venv/lib" -maxdepth 3 -name "site-packages" | head -n 1)"
 if [[ -n "${SITE_PKGS}" && -d "${SITE_PKGS}" ]]; then
-  echo "   Embutindo runtime Python do Kokoro-82M (kokoro-onnx, onnxruntime CPU, espeakng)..."
-  mkdir -p "${RES_DIR}/python-site-packages"
+  echo "   Embutindo módulos Kokoro-82M no Python portátil..."
+  mkdir -p "${RES_DIR}/python/lib/python3.12/site-packages"
   rsync -a \
     --exclude='ziglang*' \
     --exclude='cargo_zigbuild*' \
     --exclude='pip*' \
     --exclude='*rocm*.so*' \
     --exclude='__pycache__' \
-    "${SITE_PKGS}/" "${RES_DIR}/python-site-packages/"
+    "${SITE_PKGS}/" "${RES_DIR}/python/lib/python3.12/site-packages/"
 fi
 
 # Copiar todos os modelos ONNX (Kokoro-82M + Vozes Piper PT-BR/EN)
@@ -64,7 +71,11 @@ cat << 'EOF' > /tmp/Oac.AppDir/AppRun
 #!/usr/bin/env bash
 HERE="$(dirname "$(readlink -f "${0}")")"
 export OAC_RESOURCE_DIR="${HERE}/usr/lib/open-audiobook-creator"
-export PATH="${OAC_RESOURCE_DIR}/bin:${OAC_RESOURCE_DIR}/bin/piper:${HERE}/usr/bin:${PATH}"
+export PATH="${OAC_RESOURCE_DIR}/bin:${OAC_RESOURCE_DIR}/bin/piper:${OAC_RESOURCE_DIR}/python/bin:${HERE}/usr/bin:${PATH}"
+export PYTHONIOENCODING="utf-8"
+export PYTHONUTF8="1"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+export LANG="${LANG:-C.UTF-8}"
 export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
 if [[ $# -gt 0 ]]; then
   exec "${HERE}/usr/bin/oac" "$@"
@@ -142,6 +153,8 @@ done
 cp "${ROOT_DIR}/scripts/kokoro_bridge.py" "${WIN_BUNDLE}/scripts/kokoro_bridge.py"
 cat << 'EOF' > "${WIN_BUNDLE}/bin/kokoro-tts.cmd"
 @echo off
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUTF8=1"
 "%~dp0..\python\python.exe" "%~dp0..\scripts\kokoro_bridge.py" %*
 EOF
 
