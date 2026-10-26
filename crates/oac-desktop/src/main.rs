@@ -7,7 +7,10 @@ use oac_core::{
         BookMetadata, BookProject, CleanerOptions, ExportConfig, RenderProgress, SourceFormat,
         TtsConfig,
     },
-    tts::{list_voice_catalog, run_diagnostics, synthesize_chunk_to_wav},
+    tts::{
+        extract_embedded_bundle_if_present, list_voice_catalog, run_diagnostics, run_setup_wizard,
+        synthesize_chunk_to_wav, WizardProgress,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -59,6 +62,7 @@ const IPC_INIT_SCRIPT: &str = r#"
 struct DesktopState {
     current_project: Arc<Mutex<BookProject>>,
     render_progress: Arc<Mutex<Option<RenderProgress>>>,
+    wizard_progress: Arc<Mutex<Option<WizardProgress>>>,
     last_rendered_file: Arc<Mutex<Option<PathBuf>>>,
 }
 
@@ -468,6 +472,50 @@ fn handle_ipc_command(state: &DesktopState, cmd: &str, args: Value) -> Result<Va
             Ok(serde_json::to_value(artifact).map_err(|e| e.to_string())?)
         }
 
+        "get_wizard_progress" => {
+            let prog = state
+                .wizard_progress
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
+            Ok(serde_json::to_value(prog).map_err(|e| e.to_string())?)
+        }
+
+        "run_setup_wizard" => {
+            let wiz_handle = state.wizard_progress.clone();
+            let res = run_setup_wizard(|percent, step| {
+                if let Ok(mut g) = wiz_handle.lock() {
+                    *g = Some(WizardProgress {
+                        percent,
+                        step: step.to_string(),
+                        finished: percent >= 100.0,
+                        error: None,
+                    });
+                }
+            });
+
+            match res {
+                Ok(diagnostics) => {
+                    let voices = list_voice_catalog(Path::new("./models"));
+                    Ok(json!({
+                        "diagnostics": diagnostics,
+                        "voices": voices,
+                    }))
+                }
+                Err(err) => {
+                    if let Ok(mut g) = state.wizard_progress.lock() {
+                        *g = Some(WizardProgress {
+                            percent: 0.0,
+                            step: "Erro durante a instalação".to_string(),
+                            finished: true,
+                            error: Some(err.to_string()),
+                        });
+                    }
+                    Err(err.to_string())
+                }
+            }
+        }
+
         other => Err(format!("Comando IPC desconhecido: {other}")),
     }
 }
@@ -516,6 +564,9 @@ fn main() -> anyhow::Result<()> {
         .with_target(false)
         .init();
 
+    // Se o executável (.exe) contiver o pacote All-in-One embutido, extrai automaticamente no 1º uso
+    let _ = extract_embedded_bundle_if_present();
+
     let mut initial_project = BookProject::from_sample_pdf().or_else(|_| {
         BookProject::from_bytes(
             b"Capitulo 1\n\nBem-vindo ao Open Audiobook Creator.",
@@ -529,6 +580,7 @@ fn main() -> anyhow::Result<()> {
     let state = DesktopState {
         current_project: Arc::new(Mutex::new(initial_project)),
         render_progress: Arc::new(Mutex::new(None)),
+        wizard_progress: Arc::new(Mutex::new(None)),
         last_rendered_file: Arc::new(Mutex::new(None)),
     };
 

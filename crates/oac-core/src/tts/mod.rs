@@ -118,6 +118,10 @@ fn find_binary(candidates: &[&str]) -> Option<String> {
                 if exe_candidate.exists() {
                     return Some(exe_candidate.to_string_lossy().to_string());
                 }
+                let cmd_candidate = base.join(sub).join(format!("{bin}.cmd"));
+                if cmd_candidate.exists() {
+                    return Some(cmd_candidate.to_string_lossy().to_string());
+                }
             }
         }
 
@@ -436,7 +440,13 @@ fn try_synthesize_piper(text: &str, config: &TtsConfig, output_wav: &Path) -> Re
         crate::model::NarrationStyle::Natural => "0.30",
     };
 
-    let mut child = Command::new(&bin)
+    let mut cmd = Command::new(&bin);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let mut child = cmd
         .arg("--model")
         .arg(&model_path)
         .arg("--output_file")
@@ -484,7 +494,18 @@ fn try_synthesize_kokoro(text: &str, config: &TtsConfig, output_wav: &Path) -> R
         .strip_prefix("kokoro-")
         .unwrap_or(&config.voice_id);
 
-    let mut cmd = Command::new(&bin);
+    let mut cmd = if cfg!(windows) && bin.to_ascii_lowercase().ends_with(".cmd") {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(&bin);
+        c
+    } else {
+        Command::new(&bin)
+    };
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
     cmd.arg("--voice")
         .arg(voice_code)
         .arg("--speed")
@@ -662,5 +683,324 @@ pub fn synthesize_builtin_acoustic_wav(
         .finalize()
         .map_err(|e| OacError::AudioError(e.to_string()))?;
     Ok(())
+}
+
+const EMBEDDED_KOKORO_BRIDGE_PY: &str = include_str!("../../../../scripts/kokoro_bridge.py");
+
+pub fn user_data_dir() -> std::path::PathBuf {
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        return std::path::PathBuf::from(local_appdata).join("open-audiobook-creator");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return std::path::PathBuf::from(home).join(".local/share/open-audiobook-creator");
+    }
+    std::env::temp_dir().join("open-audiobook-creator")
+}
+
+/// Se o executável (.exe) possuir um pacote ZIP embutido ao final do binário (All-in-One),
+/// extrai automaticamente todos os motores (Piper + Python Portátil + Kokoro-82M) e modelos ONNX
+/// para o diretório de dados do usuário no primeiro uso.
+pub fn extract_embedded_bundle_if_present() -> Result<bool> {
+    let dest_root = user_data_dir();
+    let marker = dest_root.join(".embedded_bundle_v1");
+    if marker.exists() {
+        if std::env::var_os("OAC_RESOURCE_DIR").is_none() {
+            std::env::set_var("OAC_RESOURCE_DIR", &dest_root);
+        }
+        return Ok(false);
+    }
+
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return Ok(false),
+    };
+    let file = match std::fs::File::open(&exe_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(false),
+    };
+    let mut archive = match zip::ZipArchive::new(file) {
+        Ok(a) => a,
+        Err(_) => return Ok(false),
+    };
+
+    tracing::info!(
+        "Pacote All-in-One detectado no executável ({} arquivos). Extraindo para {}...",
+        archive.len(),
+        dest_root.display()
+    );
+    std::fs::create_dir_all(&dest_root)?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| OacError::TtsError {
+            engine: "Bundle".to_string(),
+            message: format!("Erro ao ler pacote embutido: {e}"),
+        })?;
+        let Some(rel_path) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            continue;
+        };
+        let out_path = dest_root.join(&rel_path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out_file = std::fs::File::create(&out_path)?;
+            std::io::copy(&mut entry, &mut out_file)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if out_path.to_string_lossy().contains("/bin/")
+                    || out_path.extension().and_then(|s| s.to_str()) == Some("py")
+                {
+                    let _ = std::fs::set_permissions(
+                        &out_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+            }
+        }
+    }
+
+    std::fs::write(&marker, b"ok")?;
+    std::env::set_var("OAC_RESOURCE_DIR", &dest_root);
+    Ok(true)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WizardProgress {
+    pub percent: f32,
+    pub step: String,
+    pub finished: bool,
+    pub error: Option<String>,
+}
+
+fn download_file_with_curl(url: &str, dest: &Path) -> Result<()> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let curl_bin = if cfg!(windows) { "curl.exe" } else { "curl" };
+    let mut cmd = Command::new(curl_bin);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let status = cmd
+        .args(["-L", "--fail", "-s", url, "-o"])
+        .arg(dest)
+        .status()
+        .map_err(|e| OacError::TtsError {
+            engine: "Wizard".to_string(),
+            message: format!("Falha ao iniciar download ({url}): {e}"),
+        })?;
+
+    if !status.success() {
+        return Err(OacError::TtsError {
+            engine: "Wizard".to_string(),
+            message: format!("Download falhou para URL: {url}"),
+        });
+    }
+    Ok(())
+}
+
+/// Assistente de Instalação Automática (Wizard): baixa e configura Piper TTS,
+/// Python 3.12 Portátil, Kokoro-82M ONNX e todas as vozes PT-BR/EN no diretório do usuário.
+pub fn run_setup_wizard<F>(mut on_progress: F) -> Result<EngineDiagnostics>
+where
+    F: FnMut(f32, &str),
+{
+    let data_dir = user_data_dir();
+    let bin_dir = data_dir.join("bin");
+    let models_dir = data_dir.join("models");
+    let scripts_dir = data_dir.join("scripts");
+    std::fs::create_dir_all(&bin_dir)?;
+    std::fs::create_dir_all(&models_dir)?;
+    std::fs::create_dir_all(&scripts_dir)?;
+
+    on_progress(
+        10.0,
+        "Extraindo ponte neural Kokoro-82M (scripts/kokoro_bridge.py)...",
+    );
+    let bridge_path = scripts_dir.join("kokoro_bridge.py");
+    std::fs::write(&bridge_path, EMBEDDED_KOKORO_BRIDGE_PY)?;
+
+    // 1. Piper TTS
+    if find_binary(&["piper", "piper-tts"]).is_none() {
+        on_progress(20.0, "Baixando motor neural Piper TTS...");
+        if cfg!(windows) {
+            let zip_path = data_dir.join("piper_win.zip");
+            download_file_with_curl(
+                "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip",
+                &zip_path,
+            )?;
+            let file = std::fs::File::open(&zip_path)?;
+            let mut archive = zip::ZipArchive::new(file).map_err(|e| OacError::TtsError {
+                engine: "Wizard".to_string(),
+                message: format!("ZIP inválido: {e}"),
+            })?;
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).unwrap();
+                if let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) {
+                    let out = bin_dir.join(rel);
+                    if entry.is_dir() {
+                        std::fs::create_dir_all(&out)?;
+                    } else {
+                        if let Some(p) = out.parent() {
+                            std::fs::create_dir_all(p)?;
+                        }
+                        let mut f = std::fs::File::create(&out)?;
+                        std::io::copy(&mut entry, &mut f)?;
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&zip_path);
+        } else {
+            let tar_path = data_dir.join("piper_linux.tar.gz");
+            download_file_with_curl(
+                "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_linux_x86_64.tar.gz",
+                &tar_path,
+            )?;
+            let _ = Command::new("tar")
+                .arg("-xzf")
+                .arg(&tar_path)
+                .arg("-C")
+                .arg(&bin_dir)
+                .status();
+            let _ = std::fs::remove_file(&tar_path);
+        }
+    }
+
+    // 2. Vozes Piper
+    let piper_voices = [
+        ("pt/pt_BR/faber/medium", "pt_BR-faber-medium"),
+        ("pt/pt_BR/edresson/low", "pt_BR-edresson-low"),
+        ("en/en_US/lessac/high", "en_US-lessac-high"),
+    ];
+    for (idx, (rel, name)) in piper_voices.iter().enumerate() {
+        let onnx_name = format!("{name}.onnx");
+        if resolve_model_file(&models_dir, &onnx_name).is_none() {
+            on_progress(
+                30.0 + (idx as f32 * 8.0),
+                &format!("Baixando voz neural Piper: {name}..."),
+            );
+            let base = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0";
+            download_file_with_curl(
+                &format!("{base}/{rel}/{name}.onnx"),
+                &models_dir.join(&onnx_name),
+            )?;
+            download_file_with_curl(
+                &format!("{base}/{rel}/{name}.onnx.json"),
+                &models_dir.join(format!("{name}.onnx.json")),
+            )?;
+        }
+    }
+
+    // 3. Modelos Kokoro-82M
+    if resolve_model_file(&models_dir, "kokoro-v1_0.onnx").is_none() {
+        on_progress(
+            58.0,
+            "Baixando modelo neural Kokoro-82M v1.0 (310 MB)...",
+        );
+        download_file_with_curl(
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+            &models_dir.join("kokoro-v1_0.onnx"),
+        )?;
+    }
+    if resolve_model_file(&models_dir, "voices-v1.0.bin").is_none() {
+        on_progress(
+            75.0,
+            "Baixando matriz de timbres e blends Kokoro-82M (voices-v1.0.bin)...",
+        );
+        download_file_with_curl(
+            "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
+            &models_dir.join("voices-v1.0.bin"),
+        )?;
+    }
+
+    // 4. Runtime Python Portátil + kokoro-onnx
+    if find_binary(&["kokoro-tts", "kokoro"]).is_none() {
+        on_progress(
+            82.0,
+            "Baixando Python 3.12 Portátil Autônomo (sem precisar instalar Python no sistema)...",
+        );
+        let py_archive = data_dir.join("python_portable.tar.gz");
+        let py_url = if cfg!(windows) {
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20250212/cpython-3.12.9+20250212-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+        } else {
+            "https://github.com/astral-sh/python-build-standalone/releases/download/20250212/cpython-3.12.9+20250212-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+        };
+        download_file_with_curl(py_url, &py_archive)?;
+
+        let tar_bin = if cfg!(windows) { "tar.exe" } else { "tar" };
+        let mut tar_cmd = Command::new(tar_bin);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            tar_cmd.creation_flags(0x08000000);
+        }
+        let _ = tar_cmd
+            .arg("-xzf")
+            .arg(&py_archive)
+            .arg("-C")
+            .arg(&data_dir)
+            .status();
+        let _ = std::fs::remove_file(&py_archive);
+
+        on_progress(
+            90.0,
+            "Instalando pacotes neurais kokoro-onnx, onnxruntime e soundfile...",
+        );
+        let py_exe = if cfg!(windows) {
+            data_dir.join("python").join("python.exe")
+        } else {
+            data_dir.join("python").join("bin").join("python3")
+        };
+
+        let mut pip_cmd = Command::new(&py_exe);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            pip_cmd.creation_flags(0x08000000);
+        }
+        let _ = pip_cmd
+            .args([
+                "-m",
+                "pip",
+                "install",
+                "--no-warn-script-location",
+                "-q",
+                "kokoro-onnx",
+                "onnxruntime",
+                "soundfile",
+            ])
+            .status();
+
+        if cfg!(windows) {
+            let cmd_wrapper = bin_dir.join("kokoro-tts.cmd");
+            std::fs::write(
+                &cmd_wrapper,
+                "@echo off\r\n\"%~dp0..\\python\\python.exe\" \"%~dp0..\\scripts\\kokoro_bridge.py\" %*\r\n",
+            )?;
+        } else {
+            let sh_wrapper = bin_dir.join("kokoro-tts");
+            std::fs::write(
+                &sh_wrapper,
+                "#!/usr/bin/env bash\nset -euo pipefail\nROOT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")/..\" && pwd)\"\nexec \"${ROOT_DIR}/python/bin/python3\" \"${ROOT_DIR}/scripts/kokoro_bridge.py\" \"$@\"\n",
+            )?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &sh_wrapper,
+                    std::fs::Permissions::from_mode(0o755),
+                );
+            }
+        }
+    }
+
+    std::env::set_var("OAC_RESOURCE_DIR", &data_dir);
+    on_progress(100.0, "Instalação concluída! Todos os motores e vozes estão prontos.");
+    Ok(run_diagnostics())
 }
 

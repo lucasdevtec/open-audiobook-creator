@@ -7,7 +7,7 @@ mkdir -p "${ROOT_DIR}/dist"
 
 echo "================================================================"
 echo "📦 Empacotador Standalone All-in-One (.AppImage + .exe)"
-echo "   Inclui: Motores Kokoro-82M + Piper TTS + Modelos de Voz ONNX"
+echo "   Tanto o .AppImage quanto o .exe carregam Kokoro-82M + Piper + Modelos"
 echo "================================================================"
 
 # 0. Garantir que modelos e binários locais existam antes de empacotar
@@ -25,7 +25,7 @@ echo "➡️  [2/4] Compilando binários Linux x86_64 Release..."
 cargo build --release --workspace
 
 # 3. Empacotar .AppImage All-in-One (Binários + Runtime Kokoro/Piper + Modelos ONNX embutidos)
-echo "➡️  [3/4] Montando AppDir completo com motores TTS e vozes neurais..."
+echo "➡️  [3/4] Montando AppImage Linux All-in-One..."
 rm -rf /tmp/Oac.AppDir
 RES_DIR="/tmp/Oac.AppDir/usr/lib/open-audiobook-creator"
 mkdir -p /tmp/Oac.AppDir/usr/bin "${RES_DIR}/bin" "${RES_DIR}/models" "${RES_DIR}/scripts"
@@ -100,8 +100,8 @@ fi
 ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run /tmp/Oac.AppDir "${ROOT_DIR}/dist/Open-Audiobook-Creator-0.1.0-x86_64.AppImage"
 chmod +x "${ROOT_DIR}/dist/Open-Audiobook-Creator-0.1.0-x86_64.AppImage"
 
-# 4. Cross-compile Windows 64-bit (.exe Nativo GUI sem console e sem servidor HTTP) via cargo-zigbuild
-echo "➡️  [4/4] Compilando aplicativo Desktop Windows 64-bit (dist/Open-Audiobook-Creator-0.1.0-x64.exe)..."
+# 4. Cross-compile Windows 64-bit (.exe All-in-One com Piper Windows + Python Portátil + Kokoro + Modelos ONNX embutidos)
+echo "➡️  [4/4] Montando aplicativo Desktop Windows All-in-One (dist/Open-Audiobook-Creator-0.1.0-x64.exe)..."
 rustup target add x86_64-pc-windows-gnu
 if [[ -d "${ROOT_DIR}/.venv" ]]; then
   "${ROOT_DIR}/.venv/bin/pip" install ziglang cargo-zigbuild -q
@@ -109,9 +109,52 @@ if [[ -d "${ROOT_DIR}/.venv" ]]; then
 else
   cargo zigbuild --release --target x86_64-pc-windows-gnu -p oac-desktop
 fi
-cp "${ROOT_DIR}/target/x86_64-pc-windows-gnu/release/open-audiobook-creator.exe" "${ROOT_DIR}/dist/Open-Audiobook-Creator-0.1.0-x64.exe"
+
+WIN_BUNDLE="/tmp/Oac.WinBundle"
+rm -rf "${WIN_BUNDLE}" /tmp/oac_win_payload.zip
+mkdir -p "${WIN_BUNDLE}/bin" "${WIN_BUNDLE}/models" "${WIN_BUNDLE}/scripts"
+
+# 4.1 Baixar Piper TTS Windows x64 se não estiver em cache
+if [[ ! -f /tmp/piper_windows_amd64.zip ]]; then
+  echo "   Baixando binário Piper TTS para Windows x64..."
+  curl -sL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip" -o /tmp/piper_windows_amd64.zip
+fi
+unzip -q -o /tmp/piper_windows_amd64.zip -d "${WIN_BUNDLE}/bin"
+
+# 4.2 Baixar Python 3.12 Portátil para Windows x64 + wheels nativas win_amd64 do Kokoro-82M
+if [[ ! -f /tmp/cpython_win_x64.tar.gz ]]; then
+  echo "   Baixando Python 3.12 Portátil para Windows x64..."
+  curl -sL "https://github.com/astral-sh/python-build-standalone/releases/download/20250212/cpython-3.12.9+20250212-x86_64-pc-windows-msvc-install_only_stripped.tar.gz" -o /tmp/cpython_win_x64.tar.gz
+fi
+tar -xzf /tmp/cpython_win_x64.tar.gz -C "${WIN_BUNDLE}"
+
+mkdir -p /tmp/win-wheels
+if [[ -z "$(ls -A /tmp/win-wheels 2>/dev/null)" ]]; then
+  echo "   Baixando pacotes Windows (win_amd64) do Kokoro-82M (kokoro-onnx, onnxruntime, soundfile, espeakng)..."
+  "${ROOT_DIR}/.venv/bin/pip" download --dest /tmp/win-wheels --platform win_amd64 --python-version 3.12 --only-binary=:all: kokoro-onnx onnxruntime soundfile -q
+fi
+mkdir -p "${WIN_BUNDLE}/python/Lib/site-packages"
+for whl in /tmp/win-wheels/*.whl; do
+  unzip -q -o "${whl}" -d "${WIN_BUNDLE}/python/Lib/site-packages"
+done
+
+# 4.3 Criar wrapper kokoro-tts.cmd e copiar kokoro_bridge.py + modelos ONNX
+cp "${ROOT_DIR}/scripts/kokoro_bridge.py" "${WIN_BUNDLE}/scripts/kokoro_bridge.py"
+cat << 'EOF' > "${WIN_BUNDLE}/bin/kokoro-tts.cmd"
+@echo off
+"%~dp0..\python\python.exe" "%~dp0..\scripts\kokoro_bridge.py" %*
+EOF
+
+cp -f "${ROOT_DIR}"/models/*.onnx* "${WIN_BUNDLE}/models/"
+cp -f "${ROOT_DIR}/models/voices-v1.0.bin" "${WIN_BUNDLE}/models/"
+
+echo "   Compactando payload Windows All-in-One e acoplando ao executável .exe..."
+(cd "${WIN_BUNDLE}" && zip -q -1 -r /tmp/oac_win_payload.zip bin python scripts models)
+cat "${ROOT_DIR}/target/x86_64-pc-windows-gnu/release/open-audiobook-creator.exe" /tmp/oac_win_payload.zip > "${ROOT_DIR}/dist/Open-Audiobook-Creator-0.1.0-x64.exe"
+chmod +x "${ROOT_DIR}/dist/Open-Audiobook-Creator-0.1.0-x64.exe"
+rm -rf "${WIN_BUNDLE}" /tmp/oac_win_payload.zip
 
 echo "================================================================"
-echo "🎉 Pacotes Desktop All-in-One gerados com sucesso em dist/:"
+echo "🎉 Pacotes Desktop All-in-One (.AppImage + .exe) gerados em dist/:"
 ls -lh "${ROOT_DIR}/dist/"
 echo "================================================================"

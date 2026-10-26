@@ -13,9 +13,12 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
-SOCKET_PATH = f"/tmp/oac_kokoro_worker_v3_{os.getuid()}.sock"
+_UID = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "win")
+SOCKET_PATH = os.path.join(tempfile.gettempdir(), f"oac_kokoro_worker_v3_{_UID}.sock")
+WIN_TCP_PORT = 51423
 IDLE_TIMEOUT_SECS = 300
 
 
@@ -138,15 +141,21 @@ def synthesize_with_style(kokoro, text: str, voice_code: str, speed: float, styl
 def run_worker_daemon(model_path: str, voices_path: str) -> int:
     import soundfile as sf
 
-    if os.path.exists(SOCKET_PATH):
+    use_unix = hasattr(socket, "AF_UNIX") and os.name != "nt"
+    if use_unix and os.path.exists(SOCKET_PATH):
         try:
             os.unlink(SOCKET_PATH)
         except OSError:
             pass
 
     kokoro = create_kokoro_instance(model_path, voices_path)
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(SOCKET_PATH)
+    if use_unix:
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(SOCKET_PATH)
+    else:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", WIN_TCP_PORT))
     srv.listen(8)
     srv.settimeout(IDLE_TIMEOUT_SECS)
 
@@ -184,7 +193,7 @@ def run_worker_daemon(model_path: str, voices_path: str) -> int:
                 conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
     finally:
         srv.close()
-        if os.path.exists(SOCKET_PATH):
+        if use_unix and os.path.exists(SOCKET_PATH):
             try:
                 os.unlink(SOCKET_PATH)
             except OSError:
@@ -201,8 +210,7 @@ def request_via_worker(
     style: str,
     output: str,
 ) -> bool:
-    if not hasattr(socket, "AF_UNIX"):
-        return False
+    use_unix = hasattr(socket, "AF_UNIX") and os.name != "nt"
 
     payload = (
         json.dumps(
@@ -218,11 +226,19 @@ def request_via_worker(
     ).encode("utf-8")
 
     for attempt in range(2):
-        if os.path.exists(SOCKET_PATH):
+        if not use_unix or os.path.exists(SOCKET_PATH):
             try:
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as cli:
+                cli = (
+                    socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    if use_unix
+                    else socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                )
+                with cli:
                     cli.settimeout(120.0)
-                    cli.connect(SOCKET_PATH)
+                    if use_unix:
+                        cli.connect(SOCKET_PATH)
+                    else:
+                        cli.connect(("127.0.0.1", WIN_TCP_PORT))
                     cli.sendall(payload)
                     resp_bytes = b""
                     while True:
@@ -239,6 +255,16 @@ def request_via_worker(
                 pass
 
         if attempt == 0:
+            popen_kwargs = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "start_new_session": True,
+            }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NO_WINDOW", 0x08000000
+                )
             subprocess.Popen(
                 [
                     sys.executable,
@@ -247,15 +273,20 @@ def request_via_worker(
                     "--models-dir",
                     os.path.dirname(model_path),
                 ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                **popen_kwargs,
             )
-            for _ in range(40):
-                if os.path.exists(SOCKET_PATH):
+            for _ in range(50):
+                if use_unix and os.path.exists(SOCKET_PATH):
                     time.sleep(0.05)
                     break
+                if not use_unix:
+                    try:
+                        with socket.create_connection(
+                            ("127.0.0.1", WIN_TCP_PORT), timeout=0.1
+                        ):
+                            break
+                    except OSError:
+                        pass
                 time.sleep(0.1)
 
     return False

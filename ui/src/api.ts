@@ -279,3 +279,30 @@ export async function startAudiobookRender(): Promise<RenderArtifact> {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export interface WizardProgress {
+  percent: number;
+  step: string;
+  finished: boolean;
+  error: string | null;
+}
+
+export async function runSetupWizard(): Promise<SystemInfoResponse> {
+  const desktop = getDesktopBridge();
+  if (desktop) {
+    return desktop.invoke<SystemInfoResponse>('run_setup_wizard');
+  }
+  const res = await fetch(`${API_BASE}/api/system/wizard`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function fetchWizardProgress(): Promise<WizardProgress | null> {
+  const desktop = getDesktopBridge();
+  if (desktop) {
+    return desktop.invoke<WizardProgress | null>('get_wizard_progress');
+  }
+  const res = await fetch(`${API_BASE}/api/system/wizard/progress`);
+  if (!res.ok) return null;
+  return res.json();
+}
