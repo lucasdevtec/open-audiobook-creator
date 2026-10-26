@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/oac-core",
     "crates/oac-cli",
+    "crates/oac-desktop",
 ]
 
 [workspace.package]

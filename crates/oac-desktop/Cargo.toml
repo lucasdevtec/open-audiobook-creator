@@ -1,18 +1,22 @@
 [package]
 name = "oac-desktop"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-description = "Tauri v2 Desktop Application for Open Audiobook Creator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Aplicativo Desktop Nativo (Sem Servidor HTTP) para o Open Audiobook Creator"
 
-[build-dependencies]
-tauri-build = { version = "2.0", features = [] }
+[[bin]]
+name = "open-audiobook-creator"
+path = "src/main.rs"
 
 [dependencies]
 oac-core = { path = "../oac-core" }
-tauri = { version = "2.0", features = [] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-base64 = "0.22"
-uuid = { version = "1.11", features = ["v4"] }
-
+tao = "0.33"
+wry = "0.51"
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

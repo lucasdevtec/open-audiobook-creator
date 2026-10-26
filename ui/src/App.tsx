@@ -80,9 +80,9 @@ export default function App() {
       if (proj.chapters.length > 0) {
         selectChapter(proj, proj.chapters[0].id);
       }
-    } catch (err) {
+    } catch (err: any) {
       setErrorMessage(
-        'Não foi possível conectar ao servidor Rust local (porta 14200). Execute `cargo run -p oac-cli -- serve`.'
+        err?.message || 'Não foi possível inicializar o motor local do Open Audiobook Creator.'
       );
     }
   }

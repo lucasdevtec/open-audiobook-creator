@@ -93,7 +93,29 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => {
-            server::run_http_server(14200, true).await?;
+            // Tenta iniciar o aplicativo Desktop nativo (sem servidor HTTP);
+            // o servidor HTTP só é iniciado quando o usuário executa `oac serve` explicitamente.
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+            let desktop_bin = exe_dir
+                .map(|d| {
+                    if cfg!(windows) {
+                        d.join("open-audiobook-creator.exe")
+                    } else {
+                        d.join("open-audiobook-creator")
+                    }
+                })
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| PathBuf::from("open-audiobook-creator"));
+
+            let status = std::process::Command::new(&desktop_bin).status();
+            if status.is_err() {
+                use clap::CommandFactory;
+                Cli::command().print_help()?;
+                println!("\n\n💡 Dica: Para abrir o aplicativo desktop nativo, execute `open-audiobook-creator` (ou `cargo run -p oac-desktop`).");
+                println!("   O servidor web local é opcional e só inicia se você executar `oac serve`.");
+            }
         }
 
         Some(Commands::Extract { input, output }) => {
