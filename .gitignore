@@ -1,0 +1,31 @@
+# Rust / Cargo
+/target/
+**/target/
+Cargo.lock
+
+# Node / Frontend
+node_modules/
+ui/node_modules/
+ui/dist/
+.vite/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Local TTS models, binaries & generated audio cache
+.oac-cache/
+.venv/
+bin/
+dist/
+models/
+output/
+*.AppImage
+*.exe
+*.m4b
+*.mp3
+*.wav
+
